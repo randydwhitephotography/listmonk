@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"regexp"
 	"strings"
+	txttpl "text/template"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -69,6 +70,14 @@ const (
 	EmailHeaderSubscriberUUID = "X-Listmonk-Subscriber"
 	EmailHeaderCampaignUUID   = "X-Listmonk-Campaign"
 
+	// Standard e-mail headers.
+	EmailHeaderDate        = "Date"
+	EmailHeaderFrom        = "From"
+	EmailHeaderSubject     = "Subject"
+	EmailHeaderMessageId   = "Message-Id"
+	EmailHeaderDeliveredTo = "Delivered-To"
+	EmailHeaderReceived    = "Received"
+
 	BounceTypeHard = "hard"
 	BounceTypeSoft = "soft"
 )
@@ -112,6 +121,16 @@ var regTplFuncs = []regTplFunc{
 // when a campaign's status changes.
 type AdminNotifCallback func(subject string, data interface{}) error
 
+// PageResults is a generic HTTP response container for paginated results of list of items.
+type PageResults struct {
+	Results interface{} `json:"results"`
+
+	Query   string `json:"query"`
+	Total   int    `json:"total"`
+	PerPage int    `json:"per_page"`
+	Page    int    `json:"page"`
+}
+
 // Base holds common fields shared across models.
 type Base struct {
 	ID        int       `db:"id" json:"id"`
@@ -144,6 +163,15 @@ type Subscriber struct {
 type subLists struct {
 	SubscriberID int            `db:"subscriber_id"`
 	Lists        types.JSONText `db:"lists"`
+}
+
+// SubscriberExportProfile represents a subscriber's collated data in JSON for export.
+type SubscriberExportProfile struct {
+	Email         string          `db:"email" json:"-"`
+	Profile       json.RawMessage `db:"profile" json:"profile,omitempty"`
+	Subscriptions json.RawMessage `db:"subscriptions" json:"subscriptions,omitempty"`
+	CampaignViews json.RawMessage `db:"campaign_views" json:"campaign_views,omitempty"`
+	LinkClicks    json.RawMessage `db:"link_clicks" json:"link_clicks,omitempty"`
 }
 
 // SubscriberAttribs is the map of key:value attributes of a subscriber.
@@ -210,7 +238,7 @@ type Campaign struct {
 	// TemplateBody is joined in from templates by the next-campaigns query.
 	TemplateBody string             `db:"template_body" json:"-"`
 	Tpl          *template.Template `json:"-"`
-	SubjectTpl   *template.Template `json:"-"`
+	SubjectTpl   *txttpl.Template   `json:"-"`
 	AltBodyTpl   *template.Template `json:"-"`
 
 	// Pseudofield for getting the total number of subscribers
@@ -235,6 +263,28 @@ type CampaignMeta struct {
 	StartedAt null.Time `db:"started_at" json:"started_at"`
 	ToSend    int       `db:"to_send" json:"to_send"`
 	Sent      int       `db:"sent" json:"sent"`
+}
+
+type CampaignStats struct {
+	ID        int       `db:"id" json:"id"`
+	Status    string    `db:"status" json:"status"`
+	ToSend    int       `db:"to_send" json:"to_send"`
+	Sent      int       `db:"sent" json:"sent"`
+	Started   null.Time `db:"started_at" json:"started_at"`
+	UpdatedAt null.Time `db:"updated_at" json:"updated_at"`
+	Rate      int       `json:"rate"`
+	NetRate   int       `json:"net_rate"`
+}
+
+type CampaignAnalyticsCount struct {
+	CampaignID int       `db:"campaign_id" json:"campaign_id"`
+	Count      int       `db:"count" json:"count"`
+	Timestamp  time.Time `db:"timestamp" json:"timestamp"`
+}
+
+type CampaignAnalyticsLink struct {
+	URL   string `db:"url" json:"url"`
+	Count int    `db:"count" json:"count"`
 }
 
 // Campaigns represents a slice of Campaigns.
@@ -428,7 +478,9 @@ func (c *Campaign) CompileTemplate(f template.FuncMap) error {
 		for _, r := range regTplFuncs {
 			subj = r.regExp.ReplaceAllString(subj, r.replace)
 		}
-		subjTpl, err := template.New(ContentTpl).Funcs(f).Parse(subj)
+
+		var txtFuncs map[string]interface{} = f
+		subjTpl, err := txttpl.New(ContentTpl).Funcs(txtFuncs).Parse(subj)
 		if err != nil {
 			return fmt.Errorf("error compiling subject: %v", err)
 		}
